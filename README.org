@@ -1,0 +1,524 @@
+#+TITLE: Nim rewrite of Whisker Menu — founding conversation
+#+AUTHOR: Luis De Araujo
+#+DATE: 2026-11-15
+#+STARTUP: overview
+
+* Project goal
+
+Rewrite the Xfce Whisker Menu panel plugin in Nim, so that two features can be
+added that upstream does not have:
+
+1. *File search* inside the menu.
+2. *App-menu (global menu) support* on Wayland, targeting GTK apps on labwc,
+   including LibreOffice.
+
+Motivation: Xfce + labwc uses roughly 1 GB less memory than GNOME and windows
+feel snappier, so the aim is to get the missing GNOME-style conveniences
+without GNOME.
+
+* Plan [2/6]
+
+Tick boxes with =C-c C-c=; the =[/]= cookies update on their own. The order is
+a proposal: phase 1 is checks that could change the design, so do it first.
+
+** TODO 1. Verify the risky assumptions on a real labwc session [0/5]
+
+- [ ] GTK app-ID trick: pick a GTK app with a traditional menubar and run the
+  command below. An =org.gtk.Menus= interface in the output means the trick
+  works for that app.
+  #+begin_src sh
+  gdbus introspect --session --dest <app.id> --object-path /<app/id>/menus/menubar
+  #+end_src
+- [ ] LibreOffice: find which bus name and object path it exports its menu on
+  under Wayland (expected: a unique name, not the app ID).
+- [ ] LibreOffice: find a way to match its window to that bus name, most likely
+  by process ID, given that the labwc window list gives no PID directly.
+- [ ] XWayland: confirm the active X window is readable from XWayland's root
+  window under labwc (handled inside wlroots).
+- [ ] Decide whether XWayland apps are in scope at all; the stated target is
+  Wayland + GTK + labwc + LibreOffice.
+
+** DONE 2. Decide the Nim foundations [4/4]
+
+- [X] GTK binding: hand-written, headerless bindings (=src/whisker/glib.nim=,
+  =gtk.nim=, =xfce.nim=, =xfcepanel.nim=), linked by soname so no =-devel=
+  packages are needed. =gintro= was not used.
+- [X] How the plugin loads: Nim exports =xfce_panel_module_construct= itself
+  (what upstream's registration macro expands to); no C stub.
+- [X] Build system and install layout: =nimble plugin= / =nimble installUser=
+  (per-user install under =~/.local=; see [[*Build status (2026-11-15)][Build status]]).
+- [X] Settings storage: favorites and recent keep upstream's xfconf format.
+  Everything else is compile-time for now (=src/whisker/config.nim=).
+
+** TODO 3. Port Whisker Menu to Nim [3/9]
+
+Upstream is about 12,300 lines of C++; file names refer to its =panel-plugin/=
+directory. =[-]= marks a partial port; details under [[*Build status (2026-11-15)][Build status]].
+
+- [-] Panel integration and popup command (=plugin.cpp=,
+  =xfce4-popup-whiskermenu.cpp=). Plugin and the =popup= remote event are
+  done; the popup helper binary is not.
+- [-] Menu window: layout, positioning, resizing (=window.cpp=, =resizer.cpp=).
+  One fixed layout; no resizing.
+- [X] Application loading and categories (=applications-page.cpp=,
+  =category.cpp=, =launcher.cpp=).
+- [-] Launcher views, icon and tree (=launcher-icon-view.cpp=,
+  =launcher-tree-view.cpp=, =icon-renderer.cpp=). Icon view only.
+- [-] Favorites and recent pages (=favorites-page.cpp=, =recent-page.cpp=).
+  No drag-and-drop reordering or sorting.
+- [X] Search page, query matching and search actions (=search-page.cpp=,
+  =query.cpp=, =search-action.cpp=).
+- [X] Session commands: lock, log out, settings (=command.cpp=).
+- [ ] Settings and settings dialog (=settings.cpp=, =settings-dialog.cpp=).
+  Deferred on purpose: the look is fixed to the current configuration.
+- [ ] Translations: reuse upstream's =.po= files where strings are unchanged.
+
+** DONE 4. File search in the menu [4/4]
+
+- [X] Choose the backend: =plocate=, queried by file name through its index
+  (about 50 ms here). LocalSearch is installed but its indexer is not
+  running; it stays an option for content search later.
+- [X] Decide scope and limits: home directory only, no dot-files or
+  dot-directories, best 4 matches, queries of 3+ characters that are not a
+  search action or URI. All in =src/whisker/config.nim=.
+- [X] Run searches off the UI thread: =plocate= runs as an async subprocess
+  on the main loop, 150 ms after typing pauses; each keystroke cancels the
+  previous run (=src/whisker/filesearch.nim=).
+- [X] Show file results in the search page alongside applications, with
+  open and open-containing-folder actions: a "Files" list under the
+  application grid; click opens, right-click offers "Open Containing Folder".
+
+Added with it (not in the original plan): a "Settings" list between the
+applications and the files, holding the settings dialogs that match (the
+ones in the Settings Manager menu or with the =Settings= category), and
+extra search keywords for those dialogs in =src/whisker/settingskeywords.nim=
+so that, for example, "wifi" finds Advanced Network Configuration.
+
+** TODO 5. App-menu support [0/5]
+
+- [ ] Track the focused window through =libxfce4windowing=.
+- [ ] Generic fallback menu, so the widget always shows something.
+- [ ] GTK menus by app ID: read =org.gtk.Menus= and render it.
+- [ ] LibreOffice, using whatever matching phase 1 finds.
+- [ ] Decide where it lives: inside the menu plugin or as a second panel
+  plugin sharing code.
+
+** TODO 6. Package and test [0/3]
+
+- [ ] Test on Xfce + labwc (Wayland) and on Xfce + xfwm4 (X11).
+- [ ] Compare memory use and popup latency with upstream Whisker Menu.
+- [ ] README and install instructions.
+
+* Build status (2026-11-15)
+
+First build: the menu looks and behaves like the current Whisker Menu
+configuration, with no settings dialog. About 2,700 lines of Nim.
+
+** Build, test, install
+
+Needs Nim 2.x and the Xfce runtime libraries (no =-devel= packages).
+
+#+begin_src sh
+nimble test          # query unit tests + integration tests (need a display)
+nimble preview       # build/whisker-preview, the menu without the panel
+nimble plugin        # build/libwhisker-nim.so
+nimble installUser   # copy plugin + .desktop file under ~/.local
+#+end_src
+
+Try the menu without touching the panel (centered; exits when it closes):
+
+#+begin_src sh
+build/whisker-preview --stay --base:/plugins/plugin-5   # reads, never writes
+#+end_src
+
+The keybinding Win+Space in =~/.config/xfce4/labwc/rc.xml= runs the
+=--plugin-event= command below (backup of the earlier file:
+=rc.xml.bak-whisker-nim=).
+
+After =nimble installUser=, add it next to the real one with
+=xfce4-panel --add=whisker-nim= (or Panel → Add New Items → "Whisker Menu
+(Nim)"). A keyboard shortcut can use
+=xfce4-panel --plugin-event=whisker-nim:popup:bool:false=.
+
+** Layout of the source
+
+| File                          | Role                                             |
+|-------------------------------+--------------------------------------------------|
+| =src/whisker_plugin.nim=      | Panel button, plugin entry point                 |
+| =src/whisker_preview.nim=     | Standalone preview for development               |
+| =src/whisker/config.nim=      | The fixed configuration (edit and rebuild)       |
+| =src/whisker/menuwindow.nim=  | The popup: layout, pages, keyboard, context menu |
+| =src/whisker/apps.nim=        | garcon menu loading, categories                  |
+| =src/whisker/elements.nim=    | Launchers, search actions, run action, spawning  |
+| =src/whisker/search.nim=      | Incremental search and result ordering           |
+| =src/whisker/query.nim=       | Query matching (pure Nim, unit-tested)           |
+| =src/whisker/filesearch.nim=  | Async =plocate= runs for file search             |
+| =src/whisker/filematch.nim=   | File result filtering and ranking (unit-tested)  |
+| =src/whisker/settingskeywords.nim= | Extra search keywords for settings dialogs |
+| =src/whisker/commands.nim=    | Session command buttons, confirmation countdown  |
+| =src/whisker/store.nim=       | Favorites and recent in xfconf                   |
+| =src/whisker/iconrenderer.nim= | Custom cell renderer (GObject subclass from Nim) |
+| =src/whisker/{glib,gtk,xfce,xfcepanel}.nim= | C bindings                         |
+
+Binding procs keep their C names (=gtk_window_new=) so the code reads side by
+side with upstream and the GTK documentation.
+
+** What was checked, and how
+
+- Preview screenshot compared with the real menu on this session (labwc,
+  WhiteSur-Light, Papirus-Dark): same size, layout, translucency and icons.
+- Search results and the "No applications found" fallback, by screenshot.
+- The plugin library, loaded by a small test host the way the panel loads it:
+  button draws, =popup= event opens the menu, clean exit.
+- Automated: query matching, spawning a program, search-action expansion,
+  application loading, xfconf round-trip, file ranking, and the async
+  =plocate= pipeline (results arrive; a cancelled request stays silent).
+
+Not checked yet: the plugin inside the real =xfce4-panel= (positioning under
+the button, toggling by click, focus-out closing), launching by click, the
+context menu, the session-command confirmation dialog, and X11.
+
+** Keyboard and the actions panel (2026-11-18)
+
+On the search page the keyboard focus never leaves the search entry; one
+item across the three result sections (application grid, Settings, Files)
+is selected, and that selection is the cursor:
+
+- A new query always starts with its first result selected (the first
+  section that has anything).
+- Up/Down move through the grid by rows and on into Settings and Files (and
+  back; Up from Settings returns to the grid column you left from).
+  Left/Right edit the text until Right at its end, or any Up/Down, starts
+  moving through the results; typing returns to editing.
+- Enter opens the selected item, whatever section it is in.
+- *Tab* opens the *actions panel* for the selected item (right-click does
+  too). It replaces the results inside the menu window, rather than being a
+  popup menu: the item's icon, name and folder or description, then its
+  actions, the first one selected. Up/Down choose, Enter runs, Right enters
+  a sub-list, Esc goes back (keeping the highlight), Tab closes.
+  - Files: Open, Open With › (the applications for the file's type), Open
+    Containing Folder, Copy Path, Move to Trash, Properties.
+  - Applications and settings dialogs: their own desktop actions (e.g.
+    Firefox's New Private Window), Add/Remove Favorites, Add to Desktop,
+    Add to Panel, Edit Application, and Clear Recently Used on that page.
+
+This replaced an earlier, unfinished attempt in the same file that moved GTK
+focus between the three widgets and used GTK popup menus. Bugs found and
+fixed on the way: =gtk_menu_popup_at_widget= was declared with four
+arguments instead of five; the clipboard atom was =0= instead of
+=CLIPBOARD=; "Open With", "Move to Trash" and "Properties" called file
+manager D-Bus methods that do not exist (now GIO's app launching,
+=g_file_trash= and =ShowItemProperties=); "Send via Email" was dropped
+(=mailto:?attach== is not supported by most mail clients); and closures made
+in loops shared one variable, so every Open With entry and every desktop
+action would have run the last one.
+
+Checked in an isolated headless labwc (=tests/run-labwc.sh=,
+=tests/start-preview.sh=), with a fake default application recording what it
+was asked to open: cursor movement across all three sections, Enter, Tab on
+apps, settings and files, Open, Open With (first app), Copy Path (read back
+with =wl-paste=), Add to Favorites, Esc and Tab in the panel, right-click.
+Not run: Move to Trash and Properties (to keep real files out of it), and
+inside the real panel.
+
+Test helpers in =tools/=: =vclick= (pointer) and =vkey= (keys). =vkey= exists
+because =wtype= sends every key with timestamp 0, which GTK menus ignore,
+so popups looked dead under test.
+
+** Known differences from upstream
+
+- Not ported: settings dialog, resizing, drag and drop, tree/list views,
+  profile picture, "Hide Application", autostart entries, favorites sorting,
+  translations, the =xfce4-popup-whiskermenu= helper, popup at pointer/center.
+- The application list loads synchronously (upstream uses a thread). It
+  reloads the next time the menu opens after garcon reports a change.
+- A favorite or recent entry whose application is missing is skipped but kept
+  in the list; upstream deletes it.
+- A new panel item starts with default favorites and an empty recent list;
+  they are stored per plugin instance, as upstream does.
+- On Wayland the panel runs every plugin inside the panel process, so a crash
+  in this plugin takes the panel down with it. Same as any other plugin there,
+  but worth knowing while this is young.
+
+* Conversation record
+
+Questions are Luis's, verbatim. Answers are Claude's, lightly reformatted for
+Org. Protocol details marked "from memory" were not verified unless a later
+section says so.
+
+** Q1. Does Lumen Shell have an Exposé-like functionality?
+
+#+begin_quote
+Could you inspect https://github.com/Rocklinks/Lumen-Shell and tell me if it
+has an expose like functionality?
+#+end_quote
+
+No. Lumen Shell does not have an Exposé-style window overview (live thumbnails
+of all open windows laid out to pick from). Checked against the v0.5.0 source
+in =lumen-src.tar.gz=, about 26k lines of Rust.
+
+- *Activities button and hot corner*: both only open the app launcher grid
+  (=ui/mod.rs:738= and =ui/mod.rs:851=). The hot-corner setting is labelled
+  "Move the pointer to the top-left corner to open the app grid".
+- *Workspaces popup*: the closest thing. A bar widget showing one card per
+  workspace with its name, up to four app icons and a window count
+  (=ui/popup.rs:1261=). Clicking a card switches workspace; you cannot pick an
+  individual window, and there are no thumbnails.
+- *=overview= capability flag*: exists in =caps.rs=, but nothing in the UI
+  reads it. It is only set when a compositor announces it, so it is a
+  placeholder rather than a feature.
+- *No window capture code*: no XComposite or screencopy use for windows. The
+  shell only tracks window lists (=_NET_CLIENT_LIST= on X11,
+  =wlr-foreign-toplevel= on Wayland) to drive the dock and app menu.
+- *App Switcher settings in Tweaks*: "Show Window Previews" just writes the
+  window manager's own Alt-Tab options (xfwm4 =cycle_preview=, labwc
+  =windowSwitcher=). The switcher belongs to the WM, not Lumen.
+
+This fits the design: Lumen is a panel, dock and launcher layer on top of XFCE,
+Cinnamon, labwc or KWin, not a compositor. An Exposé would have to come from
+the underlying WM (Cinnamon's Scale, KWin's Overview) or a separate tool such
+as =skippy-xd= on X11.
+
+Caveat: the repo ships only a prebuilt binary and a source tarball; the source
+was read, not run.
+
+** Q2. How hard would it be to write an Exposé for labwc?
+
+#+begin_quote
+how hard would it be to write an expose functionality for labwc?
+#+end_quote
+
+Moderately hard, depending on which of two routes you take; the existing
+thumbnail window switcher in labwc already does most of the difficult part.
+(From memory of labwc and wlroots.)
+
+*** Route 1: patch labwc itself (the easier one)
+
+- *What already exists*: labwc 0.9 added a thumbnail style for its Alt-Tab
+  switcher (=<windowSwitcher>= with =<osd style="thumbnail">=), which renders
+  each window to an offscreen buffer and shows it scaled. An Exposé is
+  basically that, laid out as a full-screen grid with pointer picking.
+- *What you would write*: a layout algorithm (packing rows of varying aspect
+  ratios), a full-screen scene tree with the thumbnails, pointer and keyboard
+  handling, and an action to bind it to a key or corner. A guess of 500–1000
+  lines of C, about a week for someone who knows wlroots and longer if not.
+- *What makes it harder*: =wlr_scene= has no per-tree scaling, so live-updating
+  thumbnails and zoom animations of the real windows mean walking every surface
+  and subsurface yourself. Static snapshots are easy; live and animated is
+  weeks, not days.
+- *Upstream risk*: labwc is deliberately conservative (no animations,
+  Openbox-like scope), so you may end up carrying it as a fork.
+
+*** Route 2: an external client (what Lumen would need)
+
+- *The easy parts*: a =layer-shell= overlay for the full-screen surface and
+  =wlr-foreign-toplevel-management= to list and activate windows. Lumen already
+  implements both in =wl.rs=.
+- *The hard part*: getting each window's pixels. That needs
+  =ext-image-copy-capture-v1= plus =ext-foreign-toplevel-image-capture-source-v1=.
+  (Uncertain at the time whether labwc supports per-window capture; see Q4,
+  which confirms it does on master.)
+- *Other snags*: the capture protocol identifies windows through
+  =ext-foreign-toplevel-list=, while activation uses the wlr protocol, so you
+  have to match the two lists by title and app ID. Minimized windows and those
+  on other workspaces may give no frames.
+- *Fallback*: an icon-and-title grid with no thumbnails is a few hundred lines
+  in Lumen, since the window list and icon matching are already there. It is
+  only a click-to-pick grid, not a true Exposé.
+
+Recommendation: for real thumbnails on labwc, patch the compositor, starting
+from the thumbnail switcher code. For something portable across compositors,
+start with the icon grid and add capture only where the compositor supports it.
+
+** Q3. How hard is an xfce4-panel global-menu applet that works on labwc?
+
+#+begin_quote
+Other question, how hard would be to write a xfce-panel applet for global menu
+that would work in labwc? See this gnome extension:
+https://extensions.gnome.org/extension/11414/global-menu/
+#+end_quote
+
+The applet itself is easy, about a week or two; the hard part is that labwc
+gives a panel no way to know which menu belongs to the focused window. You
+would get partial coverage (GTK apps and XWayland apps), and full coverage
+needs compositor patches. (Protocol details from memory.)
+
+*** What that GNOME extension actually does
+
+It tries three sources in order: a menu the app exports over D-Bus (read by a
+separate Python daemon based on Fildem), then a curated menu that just fires
+the app's keyboard shortcuts, then a generic window menu. Its own compatibility
+table shows the limits on Wayland:
+
+| App type                                    | Real menu on Wayland?                               |
+|---------------------------------------------+-----------------------------------------------------|
+| GTK 3/4 using =gtk_application_set_menubar= | Yes                                                 |
+| GTK 3 with in-window menubar                | Only with =appmenu-gtk3-module= (untested there)    |
+| Qt 5/6, Electron, Chromium, Firefox         | Only under XWayland/Xorg                            |
+| JetBrains, Java Swing                       | No, shortcut menu only                              |
+
+So even on GNOME it is mostly an X11 mechanism with fallbacks.
+
+*** What you would build for xfce4-panel
+
+- *The plugin (easy)*: a GTK3 panel plugin that renders a
+  =com.canonical.dbusmenu= or =org.gtk.Menus= menu as a menubar. Libraries do
+  most of this, and =xfce4-appmenu-plugin= (vala-panel-appmenu) already exists
+  as a starting point, though its window matching is X11-only.
+- *Focused window (easy)*: =libxfce4windowing= gives you the active window's
+  app ID and title on labwc.
+- *Window-to-menu mapping (the hard part)*: on X11 the menu address comes from
+  window properties or the registrar, keyed by X window ID. On Wayland, apps
+  hand it to the compositor through =gtk_shell= or the KDE appmenu protocol.
+  labwc implements neither (confirmed in Q4), and there is no standard protocol
+  for passing it on to a panel.
+
+*** Workarounds, by effort
+
+1. *GTK apps via app ID (days)*: for GApplication apps the Wayland app ID is
+   normally the D-Bus name, so you can find the menu without compositor help.
+   It gets ambiguous for apps with different menus per window.
+2. *XWayland apps (about a week more)*: run a registrar and connect to XWayland
+   to read the active X window. This covers Qt, Electron and Firefox if they
+   are forced onto X11, which is a real cost on a Wayland session.
+3. *Native Qt on Wayland (weeks, needs a fork)*: implement the KDE appmenu
+   protocol in labwc plus a private channel to the panel. Upstream is unlikely
+   to take it given labwc's scope.
+4. *Shortcut and generic fallbacks (days)*: trivial to copy from the extension,
+   but they are not real menus.
+
+Options 1, 2 and 4 together would roughly match what the GNOME extension
+delivers, in maybe three to four weeks of part-time work. Most modern
+GTK4/libadwaita apps have no menubar to export at all, so the payoff is mainly
+for LibreOffice, older GTK3 apps and apps you are willing to run under
+XWayland.
+
+*** Sources
+
+- [[https://extensions.gnome.org/extension/11414/global-menu/][Global Menu extension page]]
+- [[https://github.com/Unmade760/orbit-global-menu][orbit-global-menu repository]]
+- [[https://wayland.app/protocols/kde-appmenu][KDE AppMenu protocol]]
+- [[https://aur.archlinux.org/packages/xfce4-appmenu-plugin-git][xfce4-appmenu-plugin (AUR)]]
+- [[https://github.com/labwc/labwc-scope][labwc scope]]
+
+** Q4. Does labwc's source have gtk_shell or appmenu support?
+
+#+begin_quote
+check labwc's source for gtk_shell or appmenu support
+#+end_quote
+
+Confirmed: labwc has neither. Checked on master (commit =0c05683=, 2026-11-13).
+
+- *No appmenu or =gtk_shell=*: no match for =appmenu=, =gtk_shell=, =dbusmenu=
+  or =plasma_window= anywhere in the tree. The only KDE protocol is
+  =org_kde_kwin_server_decoration=, which is about window decorations, not
+  menus.
+- *No custom protocols for it either*: the =protocols/= directory carries only
+  layer-shell and output power management. Everything else comes from wlroots,
+  which ships no appmenu implementation.
+
+So native Wayland Qt apps cannot hand their menu address to labwc, and a panel
+applet is limited to the GTK app-ID trick, XWayland apps, and the fallbacks,
+unless you patch the compositor.
+
+The XWayland route depends on the active X window being readable from
+XWayland's root window. That is handled inside wlroots rather than labwc, and
+was not checked.
+
+*Correction to the Exposé answer (Q2)*: labwc master does support per-window
+capture. It creates both =ext_image_copy_capture_manager_v1= and
+=ext_foreign_toplevel_image_capture_source_manager_v1=, along with
+=ext_foreign_toplevel_list_v1=. That makes the external-client route more
+viable than first suggested. Not checked: which release first included it, or
+how it handles minimized windows.
+
+** Q5. Partial coverage is enough
+
+#+begin_quote
+honestly, that would be enough... The advantage of xfce+labwc is that it takes
+1GB less memory than gnome... and windows are more snappy
+#+end_quote
+
+Then it is a reasonable project: the partial global menu (GTK apps by app ID,
+XWayland apps, and shortcut fallbacks) is about the same coverage the GNOME
+extension gets, without GNOME's memory cost.
+
+Suggested build order, so each step is usable on its own:
+
+1. *Plugin skeleton with the fallback menu*: a GTK3 =xfce4-panel= plugin that
+   tracks the focused window through =libxfce4windowing= and shows a generic
+   window menu. This proves the panel side works on labwc.
+2. *GTK menus by app ID*: look up =org.gtk.Menus= on the bus name matching the
+   window's app ID and render it. This is the only source of real menus for
+   native Wayland apps.
+3. *XWayland apps*: add the registrar and the X active-window lookup. This is
+   the step with the unverified wlroots dependency, so test it early with one
+   Qt app forced to =QT_QPA_PLATFORM=xcb=.
+
+Risk: LibreOffice may not fit step 2. It probably exports its menu under a
+unique bus name rather than its app ID, so it would need matching by process
+ID, which the window list on labwc does not give directly. Worth testing before
+anything else, since LibreOffice is a stated target.
+
+** Q6. How big is the Whisker Menu codebase?
+
+#+begin_quote
+another Q, how big is the codebase for whisker menu?
+#+end_quote
+
+Small: about 12,300 lines of C++ across 54 files, all in one =panel-plugin/=
+directory (upstream master, commit =075c013=, 2026-11-10; source at
+https://gitlab.xfce.org/panel-plugins/xfce4-whiskermenu-plugin). That count
+includes blank lines and licence headers, so the real code is somewhat less.
+
+| Part                               | Files |  Lines |
+|------------------------------------+-------+--------|
+| C++ sources (=.cpp=)               |    25 |  9,629 |
+| Headers (=.h=)                     |    28 |  2,626 |
+| C plugin-registration stub (=.c=)  |     1 |     20 |
+| Meson build files                  |     4 |    259 |
+| Translations (=.po=)               |    56 | 34,354 |
+
+The translations are nearly three times the size of the code, and the whole
+checkout is 1.6 MB.
+
+Largest files, showing where the effort goes:
+
+- =window.cpp= (1,383 lines): the menu popup itself, including layout and
+  positioning.
+- =settings-dialog.cpp= (1,190) and =settings.cpp= (1,113): the preferences UI
+  and their storage, together almost a quarter of the =.cpp= code.
+- =page.cpp= (669) and =plugin.cpp= (578): the shared launcher-list behaviour
+  and the panel integration.
+
+Everything else is under 500 lines per file. Full per-file counts for the
+=.cpp= files over 250 lines:
+
+| File                       | Lines |
+|----------------------------+-------|
+| =window.cpp=               |  1383 |
+| =settings-dialog.cpp=      |  1190 |
+| =settings.cpp=             |  1113 |
+| =page.cpp=                 |   669 |
+| =plugin.cpp=               |   578 |
+| =applications-page.cpp=    |   451 |
+| =launcher.cpp=             |   377 |
+| =favorites-page.cpp=       |   351 |
+| =command.cpp=              |   332 |
+| =launcher-tree-view.cpp=   |   304 |
+| =icon-renderer.cpp=        |   297 |
+| =search-action.cpp=        |   274 |
+| =search-page.cpp=          |   272 |
+| =launcher-icon-view.cpp=   |   271 |
+| =profile.cpp=              |   258 |
+| =category.cpp=             |   253 |
+
+** Q7. Project decision
+
+#+begin_quote
+Create a new folder on ~/Desktop and save this conversation there. The project
+will be a rewrite of Whisker menu in Nim so we can support file searc in the
+menu and the app-menu support for wayland+gtk+labwc+libreoffice
+#+end_quote
+
+Folder created at =~/Desktop/nim-whisker/=; this file is the record.

@@ -1,0 +1,9 @@
+[Xfce Panel]
+Type=X-XFCE-PanelPlugin
+Encoding=UTF-8
+Name=Whisker Menu (Nim)
+Comment=Show a menu to easily access installed applications
+Icon=org.xfce.panel.whiskermenu
+X-XFCE-Module=whisker-nim
+X-XFCE-Internal=true
+X-XFCE-API=2.0

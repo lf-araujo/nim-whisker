@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<!-- Minimal stock labwc config for testing the menu in an isolated session -->
+<labwc_config>
+  <desktops number="1"/>
+</labwc_config>
