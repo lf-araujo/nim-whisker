@@ -91,8 +91,11 @@ const
       isRegex: true),
     SearchActionSpec(name: "Pubmed", pattern: "!pubmed",
       command: "exo-open --launch WebBrowser  https://pubmed.ncbi.nlm.nih.gov/?term=%u"),
-    SearchActionSpec(name: "Search Tracker", pattern: "-",
-      command: "exo-open --launch TerminalEmulator  lsfz %s"),
+    SearchActionSpec(name: "Search Zotero", pattern: "!z",
+      # The zotero.org web library (works with Zotero closed); "everything"
+      # also searches notes and indexed full text.
+      command: "exo-open --launch WebBrowser " &
+        "https://www.zotero.org/luis.nando/search/%u/everything"),
     SearchActionSpec(name: "Quick run command", pattern: "!r",
       command: "exo-open --launch  %s")]
 

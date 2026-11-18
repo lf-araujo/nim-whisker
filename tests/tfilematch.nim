@@ -8,7 +8,8 @@ suite "filematch":
     check isFileQuery("report", 3)
     check not isFileQuery("re", 3)
     check not isFileQuery("!w nim", 3)
-    check not isFileQuery("-thesis", 3)
+    check not isFileQuery("!z hamaker", 3)
+    check isFileQuery("-thesis", 3) # "-" is no longer a search action.
     check not isFileQuery("https://x.org", 3)
 
   test "keeps only visible files under home whose name has every word":

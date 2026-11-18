@@ -15,7 +15,7 @@ func isFileQuery*(text: string, minChars: int): bool =
   ## Whether `text` should be searched for as a file name. Short queries and
   ## ones that look like a search action (`!w foo`, `?foo`) or a URI are not.
   let query = text.strip()
-  query.len >= minChars and query[0] notin {'!', '?', '#', '-'} and
+  query.len >= minChars and query[0] notin {'!', '?', '#'} and
     "://" notin query
 
 func queryWords*(text: string, fold: Fold = lowerFold): seq[string] =

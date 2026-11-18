@@ -561,6 +561,14 @@ Decisions, with the evidence:
 - LocalSearch folds accents, so the name ranking does too (=g_str_to_ascii=):
   "orientacoes" finds =Orientações-….md=.
 
+The integration tests that create a file and wait for it to be indexed
+fail while LocalSearch has paused itself (it does so on low battery: "Running
+on LOW Battery, pausing" in the user journal).
+
+The search action =-= (=lsfz= in a terminal) was replaced by =!z=, which
+searches the zotero.org web library (mode "everything": notes and indexed
+full text too); it works with Zotero closed.
+
 Needs =libtinysparql-3.0.so.0= at run time (linked directly). If
 LocalSearch is not reachable on D-Bus, the Files list stays empty.
 
