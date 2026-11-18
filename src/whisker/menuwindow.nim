@@ -9,19 +9,23 @@
 
 import std/[os, strutils]
 import ./[apps, commands, config, elements, filematch, filesearch, glib, gtk,
-  iconrenderer, search, store, xfce]
+  iconrenderer, related, search, store, xfce]
 
 type
   PageKind = enum
     pkFavorites, pkRecent, pkApplications, pkSearch
   ActionEntry = object ## One thing that can be done with the selected item.
     icon, label: string ## `icon` is an icon name or a serialized GIcon.
+    detail: string ## Dimmed text after the label.
     enabled, opensPage: bool ## `opensPage`: runs another page of actions.
+    heading: bool ## A section title, not an action.
+    path: string ## The file a "Related" row stands for; Tab opens its actions.
     run: proc () {.closure.}
   ActionPage = object ## What the actions panel shows.
     icon, title, subtitle: string
     entries: seq[ActionEntry]
     selected: int ## Remembered while another page is on top of this one.
+    token: int ## Identifies a file's page to the related-files lookup.
   Section = enum ## The parts of the search page, top to bottom.
     secApps, secSettings, secFiles
   Move = enum
@@ -44,6 +48,7 @@ type
     actionRows: seq[GtkWidget]
     actionPages: seq[ActionPage] ## Open pages; the last one is shown.
     actionsReturn: string ## Stack page to go back to when the panel closes.
+    relatedToken: int ## Last token handed to `findRelated`.
     searchPane: GtkWidget ## Scrolled container of the search grid.
     settingsBox, settingsList: GtkWidget
     settingRows: seq[GtkWidget]
@@ -707,6 +712,17 @@ proc addRow(list: GtkWidget, icon: GIcon, name, detail, tooltip: string):
   result = gtk_widget_get_parent(box)
   gtk_widget_show_all(result)
 
+proc addHeadingRow(list: GtkWidget, title: string): GtkWidget =
+  ## A section title inside a list: dimmed, never selected.
+  let label = gtk_label_new(cstring(title))
+  gtk_label_set_xalign(label, 0)
+  label.addClass("dim-label")
+  gtk_container_set_border_width(label, 3)
+  gtk_list_box_insert(list, label, -1)
+  result = gtk_widget_get_parent(label)
+  gtk_widget_set_sensitive(result, 0)
+  gtk_widget_show_all(result)
+
 proc newSection(title: string, list: var GtkWidget): GtkWidget =
   ## A titled results list for the search page; hidden until it has rows.
   result = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)
@@ -783,9 +799,12 @@ proc renderActions(menu: MenuWindow) =
       page.entries[page.selected].enabled:
     first = page.selected
   for i, action in page.entries:
+    if action.heading:
+      menu.actionRows.add addHeadingRow(menu.actionsList, action.label)
+      continue
     let rowIcon = iconFor(action.icon)
     let row = addRow(menu.actionsList, rowIcon, action.label,
-        if action.opensPage: "\u203A" else: "", "")
+        if action.opensPage: "\u203A" else: action.detail, action.path)
     g_object_unref(rowIcon)
     if not action.enabled:
       gtk_widget_set_sensitive(row, 0)
@@ -838,6 +857,8 @@ proc runAction(menu: MenuWindow, index: int) =
     if index in 0 ..< entries.len and entries[index].enabled:
       entries[index].run()
 
+proc fileActions(menu: MenuWindow, path: string): ActionPage
+
 proc handleActionKey(menu: MenuWindow, keyval: cuint) =
   ## Keys while the panel is open; it takes all of them.
   case keyval
@@ -855,7 +876,15 @@ proc handleActionKey(menu: MenuWindow, keyval: cuint) =
   of GDK_KEY_Escape, GDK_KEY_Left, GDK_KEY_KP_Left, GDK_KEY_BackSpace:
     menu.backActions()
   of GDK_KEY_Tab, GDK_KEY_ISO_Left_Tab:
-    menu.closeActions()
+    # On a related file, Tab opens that file's actions (Esc comes back);
+    # anywhere else it closes the panel.
+    let index = menu.selectedAction
+    if index in 0 ..< menu.actionPages[^1].entries.len and
+        menu.actionPages[^1].entries[index].path.len > 0:
+      menu.showActions(menu.fileActions(
+          menu.actionPages[^1].entries[index].path))
+    else:
+      menu.closeActions()
   else:
     discard
 
@@ -966,9 +995,17 @@ proc fileIcon(path: string): GIcon =
     result = g_content_type_get_icon(contentType)
     g_free(contentType)
 
-proc onFileResults(data: pointer, paths: seq[string]) =
-  ## Fills the "Files" list under the application results.
+proc onFileResults(data: pointer, paths: seq[string], final: bool) =
+  ## Fills the "Files" list under the application results. Called twice per
+  ## query: quick name matches, then the relevance-ordered results.
   let menu = data.toMenu
+  if paths == menu.filePaths:
+    return # The relevance pass changed nothing.
+  # A file the user already moved to stays selected if it is still listed.
+  var keep = ""
+  let (section, index) = menu.cursor
+  if section == secFiles and index in 0 ..< menu.filePaths.len:
+    keep = menu.filePaths[index]
   menu.clearFiles()
   for path in paths:
     let icon = fileIcon(path)
@@ -982,7 +1019,11 @@ proc onFileResults(data: pointer, paths: seq[string]) =
   # Something is always selected: when the old rows (and the selection on
   # one of them) are replaced, or nothing else matched, take the first result.
   if menu.activePage == pkSearch and menu.cursor.index < 0:
-    menu.selectFirstResult()
+    let kept = paths.find(keep)
+    if keep.len > 0 and kept >= 0:
+      menu.setCursor(secFiles, kept)
+    else:
+      menu.selectFirstResult()
 
 proc openPath(path: string) =
   ## Opens a file or folder with its default application.
@@ -1108,6 +1149,33 @@ proc openWithPage(menu: MenuWindow, path: string, fileIcon: string):
     node = node.next
   g_list_free(apps)
 
+proc relatedEntry(menu: MenuWindow, file: RelatedFile): ActionEntry =
+  let icon = fileIcon(file.path)
+  result = entry(iconString(icon), file.path[file.path.rfind('/') + 1 .. ^1],
+      proc () =
+    menu.hide()
+    openPath(file.path))
+  g_object_unref(icon)
+  result.detail = displayDir(file.path, homeDir()) & " \u00B7 " & file.reason
+  result.path = file.path
+
+proc onRelated(data: pointer, token: int, files: seq[RelatedFile]) =
+  ## Adds the "Related" section to the file page the lookup was made for,
+  ## if it is still open; redraws it if it is the one showing.
+  let menu = data.toMenu
+  if files.len == 0:
+    return
+  for i in 0 ..< menu.actionPages.len:
+    if menu.actionPages[i].token == token:
+      menu.actionPages[i].entries.add ActionEntry(label: "Related",
+          heading: true)
+      for file in files:
+        menu.actionPages[i].entries.add menu.relatedEntry(file)
+      if i == menu.actionPages.high:
+        menu.actionPages[i].selected = menu.selectedAction # Stay put.
+        menu.renderActions()
+      return
+
 proc fileActions(menu: MenuWindow, path: string): ActionPage =
   ## What can be done with a file: open it, open it with another
   ## application, show it in its folder, copy its path, trash it, show its
@@ -1136,6 +1204,10 @@ proc fileActions(menu: MenuWindow, path: string): ActionPage =
   result.entries.add entry("document-properties", "Properties", proc () =
     menu.hide()
     showProperties(path))
+  # The "Related" section follows when the lookup answers (`onRelated`).
+  inc menu.relatedToken
+  result.token = menu.relatedToken
+  findRelated(path, result.token, onRelated, cast[pointer](menu))
 
 proc onListButtonPress(list: GtkWidget, event: GdkEvent, data: pointer):
     gboolean {.cdecl.} =

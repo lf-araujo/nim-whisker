@@ -88,6 +88,9 @@ proc g_markup_escape_text*(text: cstring, len: int): cstring
 proc g_uri_escape_string*(unescaped, reservedAllowed: cstring,
     allowUtf8: gboolean): cstring
 proc g_path_is_absolute*(fileName: cstring): gboolean
+proc g_filename_from_uri*(uri: cstring, hostname: ptr cstring,
+    error: ptr ptr GError): cstring
+proc g_str_to_ascii*(str, fromLocale: cstring): cstring
 
 proc g_shell_parse_argv*(commandLine: cstring, argc: ptr cint,
     argv: ptr ptr cstring, error: ptr ptr GError): gboolean
@@ -162,6 +165,19 @@ proc g_subprocess_communicate_utf8_finish*(subprocess: GSubprocess,
 
 proc g_variant_new*(format: cstring): GVariant {.varargs.}
 proc g_variant_unref*(value: GVariant)
+proc g_variant_new_strv*(strv: ptr cstring, length: int): GVariant
+proc g_variant_new_array*(childType: cstring, children: ptr GVariant,
+    nChildren: csize_t): GVariant
+  ## `childType` is a type string such as "y" (G_VARIANT_TYPE is a cast).
+proc g_variant_get_child_value*(value: GVariant, index: csize_t): GVariant
+proc g_variant_get_strv*(value: GVariant,
+    length: ptr csize_t): ptr UncheckedArray[cstring]
+  ## Free the array (not its strings) with `g_free`.
+proc g_dbus_proxy_call*(proxy: GDBusProxy, methodName: cstring,
+    parameters: GVariant, flags, timeoutMsec: cint, cancellable: pointer,
+    callback: GAsyncReadyCallback, data: pointer)
+proc g_dbus_proxy_call_finish*(proxy: GDBusProxy, res: pointer,
+    error: ptr ptr GError): GVariant
 proc g_dbus_proxy_new_for_bus_sync*(busType, flags: cint, info: pointer,
     name, objectPath, interfaceName: cstring, cancellable: pointer,
     error: ptr ptr GError): GDBusProxy

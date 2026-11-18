@@ -1,4 +1,4 @@
-import std/unittest
+import std/[strutils, unittest]
 import ../src/whisker/filematch
 
 const home = "/home/u"
@@ -32,3 +32,36 @@ suite "filematch":
     check displayDir("/home/u/x.txt", home) == "~"
     check displayDir("/home/u/a/x.txt", home) == "~/a"
     check displayDir("/etc/x.txt", home) == "/etc"
+
+  test "ftsMatch makes prefix terms and drops punctuation":
+    check ftsMatch("Spons") == "spons*"
+    check ftsMatch("department  energy") == "department* energy*"
+    check ftsMatch("TDB34VVX.md") == "tdb34vvx* md*"
+    check ftsMatch("a\"b' OR c") == "a* b* or* c*"
+    check ftsMatch("orientações") == "orientações*"
+    check ftsMatch("-- ?? ") == ""
+
+  test "a fold makes accents match":
+    func noAccents(text: string): string =
+      text.multiReplace(("ç", "c"), ("õ", "o")).toLowerAscii()
+    let paths = ["/home/u/n/Orientações-SZIG.md"]
+    check rankPaths(paths, home, "orientacoes").len == 0
+    check rankPaths(paths, home, "orientacoes", fold = noAccents) == @paths
+
+  test "visiblePaths keeps order, drops hidden, outside and repeats":
+    check visiblePaths(["/home/u/b.md", "/etc/x", "/home/u/.x/y.md",
+      "/home/u/a.md", "/home/u/b.md"], home) == @["/home/u/b.md",
+      "/home/u/a.md"]
+
+  test "mergeResults keeps rows for content matches":
+    let names = @["n1", "n2", "n3", "n4", "n5"]
+    check mergeResults(names, ["c1", "c2", "c3"], 4, 2) ==
+      @["n1", "n2", "c1", "c2"]
+    check mergeResults(names, ["c1"], 4, 2) == @["n1", "n2", "n3", "c1"]
+    check mergeResults(names, [], 4, 2) == @["n1", "n2", "n3", "n4"]
+    check mergeResults(["n1"], ["c1", "c2", "c3", "c4"], 4, 2) ==
+      @["n1", "c1", "c2", "c3"]
+    check mergeResults(names, ["n1", "c1"], 4, 2) ==
+      @["n1", "n2", "n3", "c1"] # A name match is not repeated.
+    check mergeResults(names, ["c1", "c2"], 4, 0) ==
+      @["n1", "n2", "n3", "n4"]

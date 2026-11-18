@@ -75,15 +75,15 @@ directory. =[-]= marks a partial port; details under [[*Build status (2026-11-15
 
 ** DONE 4. File search in the menu [4/4]
 
-- [X] Choose the backend: =plocate=, queried by file name through its index
-  (about 50 ms here). LocalSearch is installed but its indexer is not
-  running; it stays an option for content search later.
+- [X] Choose the backend: LocalSearch (Tracker), queried over D-Bus with
+  libtinysparql. (First built on =plocate=, replaced 2026-11-18: its index
+  is rebuilt nightly, so files created that day were missing; see below.)
 - [X] Decide scope and limits: home directory only, no dot-files or
   dot-directories, best 4 matches, queries of 3+ characters that are not a
   search action or URI. All in =src/whisker/config.nim=.
-- [X] Run searches off the UI thread: =plocate= runs as an async subprocess
-  on the main loop, 150 ms after typing pauses; each keystroke cancels the
-  previous run (=src/whisker/filesearch.nim=).
+- [X] Run searches off the UI thread: async LocalSearch queries on the main
+  loop, 150 ms after typing pauses; each keystroke cancels the previous
+  request (=src/whisker/filesearch.nim=).
 - [X] Show file results in the search page alongside applications, with
   open and open-containing-folder actions: a "Files" list under the
   application grid; click opens, right-click offers "Open Containing Folder".
@@ -152,7 +152,10 @@ After =nimble installUser=, add it next to the real one with
 | =src/whisker/elements.nim=    | Launchers, search actions, run action, spawning  |
 | =src/whisker/search.nim=      | Incremental search and result ordering           |
 | =src/whisker/query.nim=       | Query matching (pure Nim, unit-tested)           |
-| =src/whisker/filesearch.nim=  | Async =plocate= runs for file search             |
+| =src/whisker/filesearch.nim=  | Async LocalSearch queries for file search        |
+| =src/whisker/tinysparql.nim=  | C bindings for libtinysparql (LocalSearch)       |
+| =src/whisker/related.nim=     | "Related" files: Zeitgeist + LocalSearch         |
+| =src/whisker/relatedmatch.nim= | Title and keyword choice for related files (unit-tested) |
 | =src/whisker/filematch.nim=   | File result filtering and ranking (unit-tested)  |
 | =src/whisker/settingskeywords.nim= | Extra search keywords for settings dialogs |
 | =src/whisker/commands.nim=    | Session command buttons, confirmation countdown  |
@@ -172,7 +175,9 @@ side with upstream and the GTK documentation.
   button draws, =popup= event opens the menu, clean exit.
 - Automated: query matching, spawning a program, search-action expansion,
   application loading, xfconf round-trip, file ranking, and the async
-  =plocate= pipeline (results arrive; a cancelled request stays silent).
+  LocalSearch pipeline (both passes arrive; a file created by the test is
+  found by name, by contents and without accents within seconds; a
+  cancelled request stays silent).
 
 Not checked yet: the plugin inside the real =xfce4-panel= (positioning under
 the button, toggling by click, focus-out closing), launching by click, the
@@ -522,3 +527,64 @@ menu and the app-menu support for wayland+gtk+labwc+libreoffice
 #+end_quote
 
 Folder created at =~/Desktop/nim-whisker/=; this file is the record.
+
+** File search on LocalSearch (2026-11-18)
+
+The menu searches files through LocalSearch instead of =plocate=. A Zotero
+note created at 15:29 could not be found: =plocate='s index is rebuilt by a
+nightly timer, while LocalSearch indexes new files within seconds.
+
+Each request runs two full-text queries, each limited to one LocalSearch
+graph as =localsearch search --files= / =--documents= do. Searching all
+graphs at once, or filtering names with =CONTAINS=, took seconds to minutes
+on this index (about 119,000 files).
+
+1. File names (=tracker:FileSystem=, 5–65 ms). Ranked by the existing
+   heuristic (prefix, word start, shallow path) and shown at once.
+2. File contents (=tracker:Documents=), ordered by LocalSearch relevance
+   (=fts:rank=), about 150–300 ms more. The list is then replaced: name
+   matches first, with up to =fileSearchContentSlots= (2) rows for content
+   matches; unused rows go to the other kind. A file already selected
+   stays selected if it is still listed.
+
+Decisions, with the evidence:
+- Relevance is not used for names. Tried: for "readme" it put README files
+  from =~/R/…= packages above the user's own =~/Desktop/*/README.org=,
+  since BM25 on a file name mostly rewards short, rare names.
+- Names and contents are not merged into one relevance order: their scores
+  are not comparable ("spons" put README files that mention "sponsor" above
+  the note named =Sponsored-…=).
+- Query words become prefix terms (=spons*=); punctuation splits words,
+  since full-text syntax would read it as operators. Quoted terms
+  (="spons"*=) do not match in LocalSearch. The text is bound as a
+  statement parameter, never spliced into the SPARQL.
+- LocalSearch folds accents, so the name ranking does too (=g_str_to_ascii=):
+  "orientacoes" finds =Orientações-….md=.
+
+Needs =libtinysparql-3.0.so.0= at run time (linked directly). If
+LocalSearch is not reachable on D-Bus, the Files list stays empty.
+
+** Related files in the actions panel (2026-11-18)
+
+Tab (or right-click) on a file opens its actions as before; about 230 ms
+later a *Related* section is added under them, up to 6 files, each tagged
+with why it is there. Enter opens one; Tab on one opens its own actions
+(Esc comes back), so links can be followed.
+
+- *used together*: Zeitgeist's =FindRelatedUris= (the Synapse "related"
+  experience): files open in the same sessions, from the event log
+  =zeitgeist-datahub= builds out of GTK's recent-files list (about 4,000
+  events here since May 2025).
+- *similar*: LocalSearch documents whose text matches the five longest
+  words of the file's title (three if five find too little), by relevance.
+  The title comes from front matter (=title:=, else Better Notes' =parent:=,
+  which names the paper of a Mktero snapshot), else the title LocalSearch
+  extracted if it says something (not "Microsoft Word - x.docx"), else the
+  file name. Zotero storage names files "Author - Year - Title", which
+  works well.
+
+Up to 3 rows are kept for similar files (=relatedSimilarSlots=); rows one
+kind leaves unused go to the other. Files read in Zotero's own reader are
+never logged by Zeitgeist, so papers mostly show "similar" files only.
+
+Also changed: the search page now shows 5 file results (was 4).

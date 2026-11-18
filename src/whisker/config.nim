@@ -53,12 +53,21 @@ const
   searchGridMinHeight* = 120 ## Keeps one row of launchers visible.
 
   # File search: results appear under the applications while typing.
-  # Backed by plocate, limited to the home directory.
+  # Backed by LocalSearch (Tracker), limited to the home directory. Matches
+  # file names and, through LocalSearch's full-text index, file contents.
   fileSearchEnabled* = true
   fileSearchMinChars* = 3
-  fileSearchMaxResults* = 4
+  fileSearchMaxResults* = 5
+  fileSearchContentSlots* = 2 ## Rows kept for content matches; 0 turns
+                              ## content search off.
   fileSearchHidden* = false ## Include dot-files and files in dot-directories.
-  fileSearchDelayMs* = 150 ## Pause in typing before plocate is run.
+  fileSearchDelayMs* = 150 ## Pause in typing before LocalSearch is asked.
+
+  # "Related" section of a file's actions: files used in the same sessions
+  # (Zeitgeist), then files with similar content (LocalSearch).
+  relatedMaxResults* = 6
+  relatedSimilarSlots* = 3 ## Rows kept for similar files; unused rows go
+                           ## to the other kind.
 
   defaultFavorites* = [
     "xfce4-web-browser.desktop",

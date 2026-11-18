@@ -26,6 +26,7 @@ task preview, "Build the standalone preview (build/whisker-preview)":
 task test, "Run the unit tests, then the integration tests (need a display)":
   exec "nim c -r --hints:off -o:build/tquery tests/tquery.nim"
   exec "nim c -r --hints:off -o:build/tfilematch tests/tfilematch.nim"
+  exec "nim c -r --hints:off -o:build/trelatedmatch tests/trelatedmatch.nim"
   exec "nim c -r --hints:off -o:build/tintegration tests/tintegration.nim"
   # The store test writes under a throwaway property base; remove it.
   exec "xfconf-query -c xfce4-panel -p /whisker-nim-test -r -R"

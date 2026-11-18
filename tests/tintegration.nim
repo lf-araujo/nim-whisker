@@ -4,7 +4,7 @@
 
 import std/[os, strutils, unittest]
 import ../src/whisker/[apps, config, elements, filesearch, glib, gtk, query,
-  search, store]
+  related, search, store]
 
 gtk_init(nil, nil)
 let screen = gtk_widget_get_screen(gtk_window_new(GTK_WINDOW_TOPLEVEL))
@@ -94,20 +94,42 @@ suite "store":
 var
   fileResults: seq[string]
   fileCalls = 0
+  finalCalls = 0
 
-proc onFiles(data: pointer, paths: seq[string]) =
+proc onFiles(data: pointer, paths: seq[string], final: bool) =
   fileResults = paths
   inc fileCalls
-  gtk_main_quit()
+  if final:
+    inc finalCalls
+    gtk_main_quit()
 
 proc giveUp(data: pointer): gboolean {.cdecl.} =
   gtk_main_quit()
 
+proc searchFiles(text: string): seq[string] =
+  ## Runs one search to its relevance-ordered results (or a 5 s timeout).
+  let fs = newFileSearch()
+  fs.onResults = onFiles
+  fileCalls = 0
+  finalCalls = 0
+  fileResults = @[]
+  fs.request(text)
+  let timeout = g_timeout_add(5000, giveUp, nil)
+  gtk_main()
+  discard g_source_remove(timeout)
+  fileResults
+
+var
+  relatedFound: seq[RelatedFile]
+  relatedToken: int
+
+proc onRelatedFiles(data: pointer, token: int, files: seq[RelatedFile]) =
+  relatedFound = files
+  relatedToken = token
+  gtk_main_quit()
+
 suite "filesearch":
-  test "finds a file in the home directory through plocate":
-    # plocate's index is refreshed periodically, so this looks for a common
-    # name instead of a file created by the test. Needs some README under
-    # the home directory, outside dot-directories.
+  test "finds a common file name in the home directory through LocalSearch":
     let fs = newFileSearch()
     fs.onResults = onFiles
     fs.request("zzzz-never-reported")
@@ -115,13 +137,66 @@ suite "filesearch":
     let timeout = g_timeout_add(5000, giveUp, nil)
     gtk_main()
     discard g_source_remove(timeout)
-    check fileCalls == 1
+    check fileCalls == 2 # Quick name matches, then relevance order.
+    check finalCalls == 1
     check fileResults.len > 0
     check fileResults.len <= fileSearchMaxResults
     for path in fileResults:
       check path.startsWith(getHomeDir())
       check "/." notin path[getHomeDir().len .. ^1]
-      check "readme" in path.toLowerAscii()
+
+  test "finds a new file by name and by contents within seconds":
+    # The bug this backend fixes: a file created today was missing until
+    # plocate's nightly update. LocalSearch indexes it within seconds.
+    # Written directly in $HOME, which LocalSearch indexes.
+    let
+      tag = "whiskernimprobe" & $getCurrentProcessId()
+      word = "zqvcontent" & $getCurrentProcessId()
+      path = getHomeDir() / ("Sponsored-" & tag & "-Orientações.md")
+    writeFile(path, "Notes mentioning " & word & " once.\n")
+    defer: removeFile(path)
+    var byName, byContent, byAccent: seq[string]
+    for attempt in 1 .. 30: # Up to ~15 s for the indexer.
+      byName = searchFiles(tag)
+      byContent = searchFiles(word)
+      byAccent = searchFiles(tag & " orientacoes")
+      if path in byName and path in byContent and path in byAccent:
+        break
+      sleep(500)
+    check path in byName
+    check path in byContent
+    check path in byAccent
+
+  test "related files: a note's front-matter title finds a similar file":
+    # The note names its paper only in YAML front matter (as Better Notes
+    # does), so only the title lookup can connect the two files.
+    let
+      id = $getCurrentProcessId()
+      words = "zqvfrobnic" & id & " xylographic quadrature"
+      note = getHomeDir() / ("whiskernim-note-" & id & ".md")
+      paper = getHomeDir() / ("whiskernim-paper-" & id & ".txt")
+    writeFile(note, "---\nparent: '" & words & "'\n---\nMy notes.\n")
+    writeFile(paper, "A study titled " & words & " and more.\n")
+    defer:
+      removeFile(note)
+      removeFile(paper)
+    var found: seq[RelatedFile]
+    for attempt in 1 .. 30: # Up to ~15 s for the indexer.
+      relatedFound = @[]
+      relatedToken = 0
+      findRelated(note, 7, onRelatedFiles, nil)
+      let timeout = g_timeout_add(5000, giveUp, nil)
+      gtk_main()
+      discard g_source_remove(timeout)
+      check relatedToken == 7
+      found = relatedFound
+      if (paper, "similar") in found:
+        break
+      sleep(500)
+    check (paper, "similar") in found
+    check found.len <= relatedMaxResults
+    for file in found:
+      check file.path != note
 
   test "cancel suppresses the callback":
     let fs = newFileSearch()
